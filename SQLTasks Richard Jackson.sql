@@ -46,7 +46,7 @@ Return the facid, facility name, member cost, and monthly maintenance of the
 facilities in question. */
 SELECT facid, name, membercost, monthlymaintenance
 FROM `Facilities` 
-WHERE membercost < (monthlymaintenance * 0.2);
+WHERE membercost > 0 AND (membercost < monthlymaintenance/5.0);
 
 /* Q4: Write an SQL query to retrieve the details of facilities with ID 1 and 5.
 Try writing the query without using the OR operator. */
@@ -58,33 +58,32 @@ WHERE facid IN (1,5);
 'cheap' or 'expensive', depending on if their monthly maintenance cost is
 more than $100. Return the name and monthly maintenance of the facilities
 in question. */
-SELECT name, monthlymaintenance,
+SELECT name,
 CASE 
 	WHEN monthlymaintenance <= 100 THEN 'cheap'
 	WHEN monthlymaintenance > 100 THEN 'expensive'
-END costly
+END as costly
 FROM `Facilities`;
 
 /* Q6: You'd like to get the first and last name of the last member(s)
 who signed up. Try not to use the LIMIT clause for your solution. */
-SELECT firstname, surname 
+SELECT firstname, surname, joindate 
 FROM `Members`
-WHERE joindate IN (SELECT MAX(joindate) FROM `Members`);
+WHERE joindate = (SELECT MAX(joindate) FROM `Members`);
 
 /* Q7: Produce a list of all members who have used a tennis court.
 Include in your output the name of the court, and the name of the member
 formatted as a single column. Ensure no duplicate data, and order by
 the member name. */
-SELECT c.facid, m.firstname, m.surname, c.name
-FROM (
-SELECT DISTINCT b.facid, b.memid, f.name
-FROM Bookings AS b
-LEFT JOIN Facilities AS f ON b.facid = f.facid
-WHERE b.facid =0
-OR b.facid =1
-) AS c
-LEFT JOIN Members AS m ON c.memid = m.memid
-ORDER BY m.surname, m.firstname;
+SELECT DISTINCT firstname || ' ' || surname AS member, name AS facility
+FROM members
+INNER JOIN bookings
+ON members.memid = bookings.memid
+INNER JOIN facilities
+ON bookings.facid = facilities.facid
+WHERE name LIKE '%Tennis Court%'
+ORDER BY member;
+
 
 /* Q8: Produce a list of bookings on the day of 2012-09-14 which
 will cost the member (or guest) more than $30. Remember that guests have
@@ -92,26 +91,32 @@ different costs to members (the listed costs are per half-hour 'slot'), and
 the guest user's ID is always 0. Include in your output the name of the
 facility, the name of the member formatted as a single column, and the cost.
 Order by descending cost, and do not use any subqueries. */
-SELECT b.facid, b.starttime, b.slots, f.membercost, f.guestcost, f.name, m.surname, m.firstname
-FROM Bookings AS b
-LEFT JOIN Facilities AS f ON b.facid = f.facid
-LEFT JOIN Members as m ON b.memid = m.memid 
-WHERE b.starttime LIKE '2012-09-14%'
-AND ((m.surname != 'Guest' AND f.membercost * slots >=30) OR (m.surname = 'Guest' AND f.guestcost * slots >=30))
-ORDER BY f.guestcost DESC;
+SELECT firstname || ' ' || surname AS member,
+name AS facility,
+CASE WHEN firstname = 'GUEST' THEN guestcost * slots ELSE membercost * slots END AS cost
+FROM members
+INNER JOIN bookings
+ON members.memid = bookings.memid
+INNER JOIN facilities
+ON bookings.facid = facilities.facid
+WHERE starttime >= '2012-09-14' AND starttime < '2012-09-15'
+AND CASE WHEN firstname = 'GUEST' THEN guestcost * slots ELSE membercost * slots END > 30
+ORDER BY cost DESC;
 
 /* Q9: This time, produce the same result as in Q8, but using a subquery. */
-SELECT c.facid, c.memid, c.starttime, c.membercost, c.guestcost, c.name, m.surname, m.firstname
-FROM (
-SELECT b.facid, b.memid, b.starttime, f.membercost, f.guestcost, f.name
-FROM Bookings AS b
-LEFT JOIN Facilities AS f ON b.facid = f.facid
-WHERE b.starttime LIKE '2012-09-14%'
-AND (f.membercost >=30
-OR f.guestcost >=30)
-) AS c
-LEFT JOIN Members AS m ON c.memid = m.memid
-ORDER BY c.guestcost DESC;
+SELECT firstname || ' ' || surname AS member,
+name AS facility, cost
+FROM
+(SELECT firstname, surname, name,
+CASE WHEN firstname = 'GUEST' THEN guestcost * slots ELSE membercost * slots END AS cost, starttime
+FROM members
+INNER JOIN bookings
+ON members.memid = bookings.memid
+INNER JOIN facilities
+ON bookings.facid = facilities.facid) AS inner_table
+WHERE starttime >= '2012-09-14' AND starttime < '2012-09-15'
+AND cost > 30
+ORDER BY cost DESC;
 
 /* PART 2: SQLite
 /* We now want you to jump over to a local instance of the database on your machine. 
@@ -132,42 +137,56 @@ QUESTIONS:
 /* Q10: Produce a list of facilities with a total revenue less than 1000.
 The output of facility name and total revenue, sorted by revenue. Remember
 that there's a different cost for guests and members! */
-SELECT sub.name, SUM( sub.revenue ) AS revenue
-FROM (
-SELECT b.facid, b.memid, f.name, f.guestcost, f.membercost, COUNT( b.facid ) AS facid_count,
-CASE
-	WHEN b.memid =0 THEN COUNT( b.facid ) * f.guestcost
-	ELSE COUNT( b.facid ) * f.membercost
-END AS 'revenue'
-FROM Bookings AS b
-LEFT JOIN Facilities AS f ON b.facid = f.facid
-GROUP BY b.facid, b.memid
-) AS sub
-GROUP BY sub.facid
-HAVING revenue <=1000;
+SELECT name, revenue
+FROM
+(SELECT name,
+SUM(CASE WHEN memid = 0 THEN guestcost * slots ELSE membercost * slots END) AS revenue
+FROM cd.bookings INNER JOIN cd.facilities
+ON cd.bookings.facid = cd.facilities.facid
+GROUP BY name) AS inner_table
+WHERE revenue < 1000
+ORDER BY revenue;
 
 /* Q11: Produce a report of members and who recommended them in alphabetic surname,firstname order */
-SELECT m.firstname, m.surname AS lastname, m.recommendedby AS recommender_id, r.firstname AS recommender_firstname, r.surname AS recommender_lastname
-FROM Members AS m
-LEFT JOIN Members AS r ON m.recommendedby = r.memid
-WHERE m.recommendedby != 0
-ORDER BY r.surname, r.firstname;
+SELECT concat(m.firstname,' ',m.surname) as Recommended_By,
+concat(rcmd.firstname,' ',rcmd.surname) as Member
+FROM Members m
+inner join Members rcmd on rcmd.recommendedby = m.memid
+WHERE m.memid > 0 
+order by m.surname,m.firstname,rcmd.surname,rcmd.surname 
 
 /* Q12: Find the facilities with their usage by member, but not guests */
-SELECT b.facid, COUNT( b.memid ) AS times_members_used, f.name
-FROM (
-SELECT facid, memid
-FROM Bookings
-WHERE memid !=0
-) AS b
-LEFT JOIN Facilities AS f ON b.facid = f.facid
-GROUP BY b.facid;
+SELECT f.name,concat(m.firstname,' ',m.surname) as Member,
+count(f.name) as bookings
+FROM Members m
+inner join Bookings bk on bk.memid = m.memid
+inner join Facilities f on f.facid = bk.facid
+where m.memid>0
+group by f.name,concat(m.firstname,' ',m.surname)
+order by f.name,m.surname,m.firstname 
 
 /* Q13: Find the facilities usage by month, but not guests */
-SELECT b.months AS month, COUNT( b.memid ) AS member_usage
-FROM (
-SELECT MONTH(starttime) AS months, memid
-FROM Bookings
-WHERE memid !=0
-) AS b
-GROUP BY b.months;
+SELECT f.name,concat(m.firstname,' ',m.surname) as Member,
+count(f.name) as bookings,
+
+sum(case when month(starttime) = 1 then 1 else 0 end) as Jan,
+sum(case when month(starttime) = 2 then 1 else 0 end) as Feb,
+sum(case when month(starttime) = 3 then 1 else 0 end) as Mar,
+sum(case when month(starttime) = 4 then 1 else 0 end) as Apr,
+sum(case when month(starttime) = 5 then 1 else 0 end) as May,
+sum(case when month(starttime) = 6 then 1 else 0 end) as Jun,
+sum(case when month(starttime) = 7 then 1 else 0 end) as Jul,
+sum(case when month(starttime) = 8 then 1 else 0 end) as Aug,
+sum(case when month(starttime) = 9 then 1 else 0 end) as Sep,
+sum(case when month(starttime) = 10 then 1 else 0 end) as Oct,
+sum(case when month(starttime) = 11 then 1 else 0 end) as Nov,
+sum(case when month(starttime) = 12 then 1 else 0 end) as Decm
+
+FROM Members m
+inner join Bookings bk on bk.memid = m.memid
+inner join Facilities f on f.facid = bk.facid
+where m.memid>0
+and year(starttime) = 2012
+
+group by f.name,concat(m.firstname,' ',m.surname)
+order by f.name,m.surname,m.firstname 
